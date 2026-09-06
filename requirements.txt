@@ -1,0 +1,7 @@
+openai
+python-telegram-bot
+python-pptx
+python-docx
+reportlab
+matplotlib
+Pillow
