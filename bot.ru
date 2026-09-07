@@ -1498,7 +1498,7 @@ async def run_agent(
                 execute_tool,
                 call.name,
                 arguments,
-        )
+           )
 
                 if (
                     isinstance(result, dict)
