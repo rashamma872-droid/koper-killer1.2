@@ -17,6 +17,10 @@ import json
 import base64
 import sqlite3
 import asyncio
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 import logging
 from datetime import datetime, timezone
 
@@ -89,6 +93,12 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 FILES_DIR = os.path.join(DATA_DIR, "files")
 os.makedirs(FILES_DIR, exist_ok=True)
+
+PROJECTS_DIR = os.path.join(DATA_DIR, "projects")
+os.makedirs(PROJECTS_DIR, exist_ok=True)
+
+MAX_PROJECT_FILES = 30
+MAX_PROJECT_FILE_SIZE = 200_000
 
 DB_PATH = os.path.join(DATA_DIR, "memory.db")
 
@@ -196,6 +206,74 @@ SYSTEM_PROMPT = """
 
 Если пользователь просто разговаривает —
 не используй инструменты без необходимости.
+
+СОЗДАНИЕ САЙТОВ:
+
+Если пользователь просит создать сайт,
+ты не должен просто выдавать ему исходный код
+в сообщении.
+
+Ты должен использовать инструмент
+create_website_project.
+
+Создавай полноценный проект из отдельных файлов.
+
+Минимально:
+
+index.html
+style.css
+script.js
+
+При необходимости создавай дополнительные файлы.
+
+После создания обязательно используй
+check_website_project.
+
+Если проверка показывает ошибки —
+исправь проект и создай его заново.
+
+Пользователю отправляй готовый ZIP-проект,
+а не огромный блок исходного кода.
+
+САЙТЫ ДЛЯ БИЗНЕСА:
+
+Старайся создавать реально полезные сайты,
+а не демонстрационные шаблоны.
+
+Учитывай:
+- мобильную версию;
+- адаптивность;
+- навигацию;
+- CTA-кнопки;
+- формы;
+- услуги;
+- цены;
+- контакты;
+- SEO meta description;
+- нормальный русский текст;
+- современный дизайн;
+- доступность;
+- скорость загрузки.
+
+Если для функции требуется настоящий сервер,
+база данных, платежи или API,
+не притворяйся, что статический JavaScript
+реально выполняет серверную функцию.
+
+В таком случае создай frontend и явно
+укажи необходимые backend endpoints.
+
+НЕ ПИШИ:
+
+"Я не могу создать набор файлов."
+
+Ты можешь создать проект через
+create_website_project.
+
+НЕ ВЫВОДИ ОГРОМНЫЙ КОД:
+
+После создания проекта сообщи коротко,
+что проект создан и отправь ZIP.
 
 """
 
@@ -626,11 +704,282 @@ def create_pptx(
 
 
 # ============================================================
+# 12.5. BUSINESS PROJECT BUILDER
+# ============================================================
+
+def validate_project_path(filename):
+    filename = str(filename).replace("\\", "/").strip()
+
+    if not filename:
+        raise ValueError("Пустое имя файла")
+
+    if filename.startswith("/"):
+        raise ValueError("Абсолютные пути запрещены")
+
+    path = Path(filename)
+
+    if ".." in path.parts:
+        raise ValueError("Выход за пределы проекта запрещён")
+
+    return filename
+
+
+def create_website_project(project_name, files):
+    """
+    Создаёт полноценный проект сайта:
+    HTML / CSS / JS / JSON и другие текстовые файлы.
+
+    После создания проект собирается в ZIP.
+    """
+
+    project_name = safe_filename(project_name)
+
+    if len(files) > MAX_PROJECT_FILES:
+        raise ValueError(
+            f"Слишком много файлов. Максимум: {MAX_PROJECT_FILES}"
+        )
+
+    project_path = os.path.join(
+        PROJECTS_DIR,
+        project_name
+    )
+
+    if os.path.exists(project_path):
+        shutil.rmtree(project_path)
+
+    os.makedirs(project_path, exist_ok=True)
+
+    created = []
+
+    for item in files:
+        filename = validate_project_path(
+            item.get("filename", "")
+        )
+
+        content = str(
+            item.get("content", "")
+        )
+
+        if len(content) > MAX_PROJECT_FILE_SIZE:
+            raise ValueError(
+                f"Файл {filename} слишком большой."
+            )
+
+        full_path = os.path.join(
+            project_path,
+            filename
+        )
+
+        os.makedirs(
+            os.path.dirname(full_path),
+            exist_ok=True
+        )
+
+        with open(
+            full_path,
+            "w",
+            encoding="utf-8"
+        ) as f:
+            f.write(content)
+
+        created.append(filename)
+
+    # Если агент забыл index.html —
+    # проект не считается полноценным сайтом.
+    if "index.html" not in created:
+        raise ValueError(
+            "В проекте отсутствует index.html"
+        )
+
+    zip_base = os.path.join(
+        FILES_DIR,
+        project_name
+    )
+
+    zip_path = shutil.make_archive(
+        zip_base,
+        "zip",
+        project_path
+    )
+
+    return {
+        "path": zip_path,
+        "filename": os.path.basename(zip_path),
+        "description": (
+            f"🌐 Сайт '{project_name}' создан. "
+            f"Файлов: {len(created)}"
+        ),
+        "project_path": project_path,
+        "files": created,
+    }
+
+
+def check_project(project_name):
+    """
+    Базовая автоматическая проверка проекта.
+    Проверяет структуру и синтаксис JavaScript,
+    если доступен Node.js.
+    """
+
+    project_name = safe_filename(project_name)
+
+    project_path = os.path.join(
+        PROJECTS_DIR,
+        project_name
+    )
+
+    if not os.path.isdir(project_path):
+        raise ValueError("Проект не найден")
+
+    errors = []
+    warnings = []
+
+    index_path = os.path.join(
+        project_path,
+        "index.html"
+    )
+
+    if not os.path.exists(index_path):
+        errors.append(
+            "Отсутствует index.html"
+        )
+
+    js_files = []
+
+    for root, _, filenames in os.walk(project_path):
+        for filename in filenames:
+            if filename.endswith(".js"):
+                js_files.append(
+                    os.path.join(root, filename)
+                )
+
+    node_path = shutil.which("node")
+
+    if node_path:
+        for js_file in js_files:
+            try:
+                result = subprocess.run(
+                    [node_path, "--check", js_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+
+                if result.returncode != 0:
+                    errors.append(
+                        f"JavaScript ошибка: "
+                        f"{os.path.basename(js_file)}"
+                    )
+
+            except Exception as e:
+                warnings.append(
+                    f"Не удалось проверить "
+                    f"{os.path.basename(js_file)}: {e}"
+                )
+    else:
+        warnings.append(
+            "Node.js не установлен — "
+            "JavaScript синтаксис не проверен."
+        )
+
+    return {
+        "project": project_name,
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+# ============================================================
 # 13. TOOLS
 # ============================================================
 
 TOOLS = [
     {"type": "web_search"},
+    
+        {
+        "type": "function",
+        "name": "create_website_project",
+        "description": """
+Создать полноценный проект сайта.
+
+Используй этот инструмент, когда пользователь
+просит создать сайт для бизнеса.
+
+НЕ выдавай пользователю огромный HTML-код вместо проекта.
+
+Создавай реальные файлы проекта:
+index.html,
+style.css,
+script.js,
+и другие необходимые файлы.
+
+Проект должен быть готов к размещению на хостинге.
+
+Всегда создавай index.html.
+
+После создания проект автоматически
+собирается в ZIP.
+""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string"
+                },
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {
+                                "type": "string"
+                            },
+                            "content": {
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "filename",
+                            "content"
+                        ],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": [
+                "project_name",
+                "files"
+            ],
+            "additionalProperties": False
+        },
+        "strict": True
+    },
+
+    {
+        "type": "function",
+        "name": "check_website_project",
+        "description": """
+Проверить ранее созданный сайт.
+
+Проверяет структуру проекта и
+синтаксис JavaScript, если доступен Node.js.
+
+Используй после создания сайта.
+""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "project_name"
+            ],
+            "additionalProperties": False
+        },
+        "strict": True
+    },
 
     {
         "type": "function",
@@ -754,6 +1103,12 @@ TOOLS = [
 
 def execute_tool(name, arguments):
     logger.info("TOOL: %s", name)
+    
+    if name == "create_website_project":
+        return create_website_project(**arguments)
+
+    if name == "check_website_project":
+        return check_project(**arguments)
 
     if name == "create_chart":
         return create_chart(**arguments)
