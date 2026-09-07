@@ -106,8 +106,8 @@ DB_PATH = os.path.join(DATA_DIR, "memory.db")
 # 5. LIMITS
 # ============================================================
 
-MAX_HISTORY = 8
-MAX_AGENT_STEPS = 3
+MAX_HISTORY = 6
+MAX_AGENT_STEPS = 6
 MAX_TEXT_LENGTH = 10000
 MAX_TELEGRAM_LENGTH = 4000
 MAX_FILE_SIZE_MB = 25
