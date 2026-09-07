@@ -1500,8 +1500,6 @@ async def run_agent(
                 arguments,
         )
 
-                )
-
                 if (
                     isinstance(result, dict)
                     and result.get("path")
