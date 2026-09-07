@@ -107,7 +107,7 @@ DB_PATH = os.path.join(DATA_DIR, "memory.db")
 # ============================================================
 
 MAX_HISTORY = 6
-MAX_AGENT_STEPS = 6
+MAX_AGENT_STEPS = 5
 MAX_TEXT_LENGTH = 10000
 MAX_TELEGRAM_LENGTH = 4000
 MAX_FILE_SIZE_MB = 25
@@ -707,7 +707,11 @@ def create_pptx(
 # 12.5. BUSINESS PROJECT BUILDER
 # ============================================================
 
-def validate_project_path(filename):
+PROJECT_FILE_LIMIT = 100
+PROJECT_FILE_MAX_CHARS = 120000
+
+
+def validate_project_filename(filename):
     filename = str(filename).replace("\\", "/").strip()
 
     if not filename:
@@ -721,22 +725,35 @@ def validate_project_path(filename):
     if ".." in path.parts:
         raise ValueError("Выход за пределы проекта запрещён")
 
-    return filename
+    if path.suffix.lower() not in {
+        ".html", ".css", ".js", ".json",
+        ".txt", ".svg", ".xml", ".md",
+        ".webmanifest"
+    }:
+        raise ValueError(
+            f"Тип файла запрещён: {path.suffix}"
+        )
+
+    return str(path)
 
 
 def create_website_project(project_name, files):
     """
-    Создаёт полноценный проект сайта:
-    HTML / CSS / JS / JSON и другие текстовые файлы.
+    Создаёт полноценный многофайловый сайт.
 
-    После создания проект собирается в ZIP.
+    Каждый файл передаётся отдельно.
+    Никакого огромного HTML-ответа пользователю.
     """
 
     project_name = safe_filename(project_name)
 
-    if len(files) > MAX_PROJECT_FILES:
+    if not files:
+        raise ValueError("Список файлов пуст")
+
+    if len(files) > PROJECT_FILE_LIMIT:
         raise ValueError(
-            f"Слишком много файлов. Максимум: {MAX_PROJECT_FILES}"
+            f"Слишком много файлов. Максимум: "
+            f"{PROJECT_FILE_LIMIT}"
         )
 
     project_path = os.path.join(
@@ -749,10 +766,10 @@ def create_website_project(project_name, files):
 
     os.makedirs(project_path, exist_ok=True)
 
-    created = []
+    created_files = []
 
     for item in files:
-        filename = validate_project_path(
+        filename = validate_project_filename(
             item.get("filename", "")
         )
 
@@ -760,9 +777,10 @@ def create_website_project(project_name, files):
             item.get("content", "")
         )
 
-        if len(content) > MAX_PROJECT_FILE_SIZE:
+        if len(content) > PROJECT_FILE_MAX_CHARS:
             raise ValueError(
-                f"Файл {filename} слишком большой."
+                f"Файл {filename} превышает "
+                f"лимит размера."
             )
 
         full_path = os.path.join(
@@ -778,18 +796,297 @@ def create_website_project(project_name, files):
         with open(
             full_path,
             "w",
-            encoding="utf-8"
+            encoding="utf-8",
+            newline=""
         ) as f:
             f.write(content)
 
-        created.append(filename)
+        created_files.append(filename)
 
-    # Если агент забыл index.html —
-    # проект не считается полноценным сайтом.
-    if "index.html" not in created:
+    if "index.html" not in created_files:
         raise ValueError(
-            "В проекте отсутствует index.html"
+            "Сайт обязан содержать index.html"
         )
+
+    return {
+        "success": True,
+        "project_name": project_name,
+        "project_path": project_path,
+        "files": created_files,
+        "file_count": len(created_files),
+    }
+
+
+def append_to_project_file(
+    project_name,
+    filename,
+    content
+):
+    """
+    Добавляет продолжение в существующий файл.
+
+    Используется для больших сайтов,
+    чтобы модель не была вынуждена
+    генерировать огромный файл одним ответом.
+    """
+
+    project_name = safe_filename(project_name)
+    filename = validate_project_filename(filename)
+
+    project_path = os.path.join(
+        PROJECTS_DIR,
+        project_name
+    )
+
+    if not os.path.isdir(project_path):
+        raise ValueError(
+            "Проект не существует"
+        )
+
+    full_path = os.path.join(
+        project_path,
+        filename
+    )
+
+    content = str(content)
+
+    if len(content) > PROJECT_FILE_MAX_CHARS:
+        raise ValueError(
+            "Добавляемый фрагмент слишком большой."
+        )
+
+    with open(
+        full_path,
+        "a",
+        encoding="utf-8",
+        newline=""
+    ) as f:
+        f.write(content)
+
+    return {
+        "success": True,
+        "filename": filename,
+        "message": "Файл дополнен."
+    }
+
+
+def read_project_file(
+    project_name,
+    filename
+):
+    """
+    Читает существующий файл проекта.
+    """
+
+    project_name = safe_filename(project_name)
+    filename = validate_project_filename(filename)
+
+    project_path = os.path.join(
+        PROJECTS_DIR,
+        project_name
+    )
+
+    full_path = os.path.join(
+        project_path,
+        filename
+    )
+
+    if not os.path.isfile(full_path):
+        raise ValueError(
+            "Файл не найден"
+        )
+
+    with open(
+        full_path,
+        "r",
+        encoding="utf-8"
+    ) as f:
+        content = f.read()
+
+    return {
+        "filename": filename,
+        "content": content,
+        "length": len(content)
+    }
+
+
+def check_project(project_name):
+    """
+    Проверяет структуру проекта
+    и базовые ошибки.
+    """
+
+    project_name = safe_filename(project_name)
+
+    project_path = os.path.join(
+        PROJECTS_DIR,
+        project_name
+    )
+
+    if not os.path.isdir(project_path):
+        raise ValueError(
+            "Проект не найден"
+        )
+
+    errors = []
+    warnings = []
+
+    all_files = []
+
+    for root, _, filenames in os.walk(
+        project_path
+    ):
+        for filename in filenames:
+            relative = os.path.relpath(
+                os.path.join(root, filename),
+                project_path
+            ).replace("\\", "/")
+
+            all_files.append(relative)
+
+    if "index.html" not in all_files:
+        errors.append(
+            "Отсутствует index.html"
+        )
+
+    index_path = os.path.join(
+        project_path,
+        "index.html"
+    )
+
+    if os.path.exists(index_path):
+        try:
+            with open(
+                index_path,
+                "r",
+                encoding="utf-8"
+            ) as f:
+                html = f.read()
+
+            if "<html" not in html.lower():
+                errors.append(
+                    "index.html не содержит <html>"
+                )
+
+            if "<body" not in html.lower():
+                warnings.append(
+                    "В index.html отсутствует <body>"
+                )
+
+            if "</html>" not in html.lower():
+                errors.append(
+                    "index.html не закрыт тегом </html>"
+                )
+
+        except UnicodeDecodeError:
+            errors.append(
+                "index.html имеет неправильную кодировку"
+            )
+
+    # Проверяем CSS на очевидные ошибки.
+    css_files = [
+        x for x in all_files
+        if x.lower().endswith(".css")
+    ]
+
+    for filename in css_files:
+        path = os.path.join(
+            project_path,
+            filename
+        )
+
+        try:
+            with open(
+                path,
+                "r",
+                encoding="utf-8"
+            ) as f:
+                css = f.read()
+
+            if css.count("{") != css.count("}"):
+                errors.append(
+                    f"CSS скобки не совпадают: {filename}"
+                )
+
+        except Exception as e:
+            errors.append(
+                f"Ошибка чтения CSS {filename}: {e}"
+            )
+
+    # Проверяем JavaScript через Node.js,
+    # если Node установлен на сервере.
+    js_files = [
+        x for x in all_files
+        if x.lower().endswith(".js")
+    ]
+
+    node = shutil.which("node")
+
+    if node:
+        for filename in js_files:
+            path = os.path.join(
+                project_path,
+                filename
+            )
+
+            try:
+                result = subprocess.run(
+                    [node, "--check", path],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+
+                if result.returncode != 0:
+                    errors.append(
+                        f"JavaScript ошибка: {filename}"
+                    )
+
+            except Exception as e:
+                warnings.append(
+                    f"JS проверка не выполнена "
+                    f"для {filename}: {e}"
+                )
+    elif js_files:
+        warnings.append(
+            "Node.js отсутствует — "
+            "JavaScript синтаксис не проверен."
+        )
+
+    return {
+        "project": project_name,
+        "ok": len(errors) == 0,
+        "files": all_files,
+        "errors": errors,
+        "warnings": warnings
+    }
+
+
+def build_project_zip(project_name):
+    """
+    После проверки собирает проект в ZIP.
+    """
+
+    project_name = safe_filename(project_name)
+
+    project_path = os.path.join(
+        PROJECTS_DIR,
+        project_name
+    )
+
+    if not os.path.isdir(project_path):
+        raise ValueError(
+            "Проект не найден"
+        )
+
+    check = check_project(project_name)
+
+    if not check["ok"]:
+        return {
+            "success": False,
+            "errors": check["errors"],
+            "warnings": check["warnings"]
+        }
 
     zip_base = os.path.join(
         FILES_DIR,
@@ -803,90 +1100,14 @@ def create_website_project(project_name, files):
     )
 
     return {
+        "success": True,
         "path": zip_path,
         "filename": os.path.basename(zip_path),
         "description": (
-            f"🌐 Сайт '{project_name}' создан. "
-            f"Файлов: {len(created)}"
+            f"🌐 Проект '{project_name}' "
+            f"проверен и упакован в ZIP."
         ),
-        "project_path": project_path,
-        "files": created,
-    }
-
-
-def check_project(project_name):
-    """
-    Базовая автоматическая проверка проекта.
-    Проверяет структуру и синтаксис JavaScript,
-    если доступен Node.js.
-    """
-
-    project_name = safe_filename(project_name)
-
-    project_path = os.path.join(
-        PROJECTS_DIR,
-        project_name
-    )
-
-    if not os.path.isdir(project_path):
-        raise ValueError("Проект не найден")
-
-    errors = []
-    warnings = []
-
-    index_path = os.path.join(
-        project_path,
-        "index.html"
-    )
-
-    if not os.path.exists(index_path):
-        errors.append(
-            "Отсутствует index.html"
-        )
-
-    js_files = []
-
-    for root, _, filenames in os.walk(project_path):
-        for filename in filenames:
-            if filename.endswith(".js"):
-                js_files.append(
-                    os.path.join(root, filename)
-                )
-
-    node_path = shutil.which("node")
-
-    if node_path:
-        for js_file in js_files:
-            try:
-                result = subprocess.run(
-                    [node_path, "--check", js_file],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-
-                if result.returncode != 0:
-                    errors.append(
-                        f"JavaScript ошибка: "
-                        f"{os.path.basename(js_file)}"
-                    )
-
-            except Exception as e:
-                warnings.append(
-                    f"Не удалось проверить "
-                    f"{os.path.basename(js_file)}: {e}"
-                )
-    else:
-        warnings.append(
-            "Node.js не установлен — "
-            "JavaScript синтаксис не проверен."
-        )
-
-    return {
-        "project": project_name,
-        "ok": len(errors) == 0,
-        "errors": errors,
-        "warnings": warnings,
+        "files": check["files"]
     }
 
 # ============================================================
@@ -1103,6 +1324,18 @@ script.js,
 
 def execute_tool(name, arguments):
     logger.info("TOOL: %s", name)
+    
+    if name == "append_to_project_file":
+       return append_to_project_file(**arguments)
+
+    if name == "read_project_file":
+        return read_project_file(**arguments)
+
+    if name == "check_website_project":
+        return check_project(**arguments)
+
+    if name == "build_project_zip":
+        return build_project_zip(**arguments)
     
     if name == "create_website_project":
         return create_website_project(**arguments)
