@@ -3,11 +3,7 @@
 # Telegram + OpenAI + Web + Voice + Files + Charts
 #
 # Функциональность и интерфейс сохранены.
-# Изменено только:
-# - убрана привязка к Google Colab / Google Drive
-# - ключи берутся из переменных окружения
-# - нормальный запуск обычного Python
-# - исправлен DOCX: Unicode/Cyrillic font settings
+# Исправлены только ошибки.
 # ============================================================
 
 import os
@@ -19,7 +15,6 @@ import sqlite3
 import asyncio
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 import logging
 from datetime import datetime, timezone
@@ -58,6 +53,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
 )
+
 logger = logging.getLogger("PERSONAL_AI_AGENT")
 
 # ============================================================
@@ -86,7 +82,6 @@ TRANSCRIBE_MODEL = "gpt-transcribe"
 # 4. STORAGE
 # ============================================================
 
-# На сервере можно задать DATA_DIR=/data для постоянного диска.
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -226,11 +221,18 @@ script.js
 
 При необходимости создавай дополнительные файлы.
 
+Для больших сайтов используй:
+append_to_project_file
+read_project_file
+
 После создания обязательно используй
 check_website_project.
 
 Если проверка показывает ошибки —
-исправь проект и создай его заново.
+исправь проект и проверь снова.
+
+После успешной проверки сайт должен быть
+упакован в ZIP и отправлен пользователю.
 
 Пользователю отправляй готовый ZIP-проект,
 а не огромный блок исходного кода.
@@ -274,7 +276,6 @@ create_website_project.
 
 После создания проекта сообщи коротко,
 что проект создан и отправь ZIP.
-
 """
 
 # ============================================================
@@ -286,6 +287,7 @@ db_lock = asyncio.Lock()
 
 def init_database():
     conn = sqlite3.connect(DB_PATH)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,16 +297,19 @@ def init_database():
             created_at TEXT NOT NULL
         )
     """)
+
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_messages_user
         ON messages(user_id, id)
     """)
+
     conn.commit()
     conn.close()
 
 
 def save_message(user_id, role, content):
     conn = sqlite3.connect(DB_PATH)
+
     content = str(content)
 
     if len(content) > MAX_HISTORY_MESSAGE_LENGTH:
@@ -323,6 +328,7 @@ def save_message(user_id, role, content):
         content,
         datetime.now(timezone.utc).isoformat(),
     ))
+
     conn.commit()
     conn.close()
 
@@ -339,27 +345,36 @@ def get_history(user_id, limit=MAX_HISTORY):
     """, (user_id, limit)).fetchall()
 
     conn.close()
+
     rows.reverse()
 
     result = []
+
     for role, content in rows:
         content = str(content)
+
         if len(content) > MAX_HISTORY_MESSAGE_LENGTH:
             content = (
                 content[:MAX_HISTORY_MESSAGE_LENGTH]
-                + "\n[сообщение обрезано]"
+                + "\n[обрезано]"
             )
-        result.append({"role": role, "content": content})
+
+        result.append({
+            "role": role,
+            "content": content,
+        })
 
     return result
 
 
 def clear_memory(user_id):
     conn = sqlite3.connect(DB_PATH)
+
     conn.execute(
         "DELETE FROM messages WHERE user_id = ?",
         (user_id,),
     )
+
     conn.commit()
     conn.close()
 
@@ -370,13 +385,16 @@ def clear_memory(user_id):
 
 def safe_filename(name):
     name = str(name)
+
     name = re.sub(
         r"[^\w\-. ]",
         "_",
         name,
         flags=re.UNICODE,
     )
+
     name = name.strip()
+
     return (name or "file")[:100]
 
 
@@ -393,7 +411,9 @@ def create_chart(
     chart_type="line",
 ):
     if not labels or not values:
-        raise ValueError("labels и values не должны быть пустыми")
+        raise ValueError(
+            "labels и values не должны быть пустыми"
+        )
 
     if len(labels) != len(values):
         raise ValueError(
@@ -403,26 +423,49 @@ def create_chart(
     values = [float(x) for x in values]
 
     filename = safe_filename(title) + "_chart.png"
-    path = os.path.join(FILES_DIR, filename)
+
+    path = os.path.join(
+        FILES_DIR,
+        filename,
+    )
 
     plt.figure(figsize=(10, 6))
 
     if chart_type == "bar":
         plt.bar(labels, values)
+
     elif chart_type == "pie":
-        plt.pie(values, labels=labels, autopct="%1.1f%%")
+        plt.pie(
+            values,
+            labels=labels,
+            autopct="%1.1f%%",
+        )
+
     else:
-        plt.plot(labels, values, marker="o")
+        plt.plot(
+            labels,
+            values,
+            marker="o",
+        )
 
     plt.title(title)
     plt.xlabel(x_label)
     plt.ylabel(y_label)
 
     if chart_type != "pie":
-        plt.xticks(rotation=45, ha="right")
+        plt.xticks(
+            rotation=45,
+            ha="right",
+        )
 
     plt.tight_layout()
-    plt.savefig(path, dpi=180, bbox_inches="tight")
+
+    plt.savefig(
+        path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
     plt.close()
 
     return {
@@ -433,44 +476,74 @@ def create_chart(
 
 
 # ============================================================
-# 10. DOCX — ИСПРАВЛЕНИЕ ЧЁРНЫХ КВАДРАТОВ
+# 10. DOCX
 # ============================================================
 
 DOCX_FONT = "Arial"
 
 
-def set_run_font(run, font_name=DOCX_FONT, size=12):
-    """
-    Word/python-docx может записывать имя шрифта только
-    в ascii/hAnsi, а для некоторых Unicode-диапазонов Word
-    использует отдельные настройки eastAsia/cs.
-
-    Поэтому задаём все основные font slots вручную.
-    Это предотвращает появление квадратов вместо Unicode-текста.
-    """
+def set_run_font(
+    run,
+    font_name=DOCX_FONT,
+    size=12,
+):
     run.font.name = font_name
     run.font.size = Pt(size)
 
     r_pr = run._r.get_or_add_rPr()
     r_fonts = r_pr.get_or_add_rFonts()
 
-    r_fonts.set(qn("w:ascii"), font_name)
-    r_fonts.set(qn("w:hAnsi"), font_name)
-    r_fonts.set(qn("w:eastAsia"), font_name)
-    r_fonts.set(qn("w:cs"), font_name)
+    r_fonts.set(
+        qn("w:ascii"),
+        font_name,
+    )
+
+    r_fonts.set(
+        qn("w:hAnsi"),
+        font_name,
+    )
+
+    r_fonts.set(
+        qn("w:eastAsia"),
+        font_name,
+    )
+
+    r_fonts.set(
+        qn("w:cs"),
+        font_name,
+    )
 
 
-def set_style_font(style, font_name=DOCX_FONT, size=12):
+def set_style_font(
+    style,
+    font_name=DOCX_FONT,
+    size=12,
+):
     style.font.name = font_name
     style.font.size = Pt(size)
 
     r_pr = style.element.get_or_add_rPr()
     r_fonts = r_pr.get_or_add_rFonts()
 
-    r_fonts.set(qn("w:ascii"), font_name)
-    r_fonts.set(qn("w:hAnsi"), font_name)
-    r_fonts.set(qn("w:eastAsia"), font_name)
-    r_fonts.set(qn("w:cs"), font_name)
+    r_fonts.set(
+        qn("w:ascii"),
+        font_name,
+    )
+
+    r_fonts.set(
+        qn("w:hAnsi"),
+        font_name,
+    )
+
+    r_fonts.set(
+        qn("w:eastAsia"),
+        font_name,
+    )
+
+    r_fonts.set(
+        qn("w:cs"),
+        font_name,
+    )
 
 
 def create_docx(
@@ -483,11 +556,13 @@ def create_docx(
     if not filename.lower().endswith(".docx"):
         filename += ".docx"
 
-    path = os.path.join(FILES_DIR, filename)
+    path = os.path.join(
+        FILES_DIR,
+        filename,
+    )
 
     document = Document()
 
-    # Настраиваем основные стили документа.
     for style_name in (
         "Normal",
         "Title",
@@ -497,16 +572,29 @@ def create_docx(
     ):
         try:
             style = document.styles[style_name]
-            set_style_font(style, DOCX_FONT, 12)
+
+            set_style_font(
+                style,
+                DOCX_FONT,
+                12,
+            )
+
         except Exception:
             pass
 
-    # Заголовок
-    title_paragraph = document.add_heading(title, level=0)
+    title_paragraph = document.add_heading(
+        title,
+        level=0,
+    )
+
     title_paragraph.alignment = 1
 
     for run in title_paragraph.runs:
-        set_run_font(run, DOCX_FONT, 20)
+        set_run_font(
+            run,
+            DOCX_FONT,
+            20,
+        )
 
     for block in str(content).split("\n\n"):
         block = block.strip()
@@ -526,22 +614,38 @@ def create_docx(
             )
         ):
             clean = first.lstrip("# ").strip()
-            paragraph = document.add_heading(clean, level=1)
+
+            paragraph = document.add_heading(
+                clean,
+                level=1,
+            )
 
             for run in paragraph.runs:
-                set_run_font(run, DOCX_FONT, 14)
+                set_run_font(
+                    run,
+                    DOCX_FONT,
+                    14,
+                )
 
         else:
-            paragraph = document.add_paragraph(block)
+            paragraph = document.add_paragraph(
+                block
+            )
 
             for run in paragraph.runs:
-                set_run_font(run, DOCX_FONT, 12)
+                set_run_font(
+                    run,
+                    DOCX_FONT,
+                    12,
+                )
 
-    # На случай, если в документе остались runs,
-    # которые были созданы стилями Word.
     for paragraph in document.paragraphs:
         for run in paragraph.runs:
-            set_run_font(run, DOCX_FONT, 12)
+            set_run_font(
+                run,
+                DOCX_FONT,
+                12,
+            )
 
     document.save(path)
 
@@ -566,9 +670,14 @@ def setup_pdf_font():
         if os.path.exists(font_path):
             try:
                 pdfmetrics.registerFont(
-                    TTFont("DejaVuSans", font_path)
+                    TTFont(
+                        "DejaVuSans",
+                        font_path,
+                    )
                 )
+
                 return "DejaVuSans"
+
             except Exception:
                 pass
 
@@ -588,7 +697,10 @@ def create_pdf(
     if not filename.lower().endswith(".pdf"):
         filename += ".pdf"
 
-    path = os.path.join(FILES_DIR, filename)
+    path = os.path.join(
+        FILES_DIR,
+        filename,
+    )
 
     doc = SimpleDocTemplate(
         path,
@@ -621,7 +733,10 @@ def create_pdf(
     )
 
     story = [
-        Paragraph(str(title), title_style)
+        Paragraph(
+            str(title),
+            title_style,
+        )
     ]
 
     for block in str(content).split("\n\n"):
@@ -639,7 +754,10 @@ def create_pdf(
         )
 
         story.append(
-            Paragraph(block, body_style)
+            Paragraph(
+                block,
+                body_style,
+            )
         )
 
     doc.build(story)
@@ -665,26 +783,45 @@ def create_pptx(
     if not filename.lower().endswith(".pptx"):
         filename += ".pptx"
 
-    path = os.path.join(FILES_DIR, filename)
+    path = os.path.join(
+        FILES_DIR,
+        filename,
+    )
 
     prs = Presentation()
 
-    slide = prs.slides.add_slide(prs.slide_layouts[0])
+    slide = prs.slides.add_slide(
+        prs.slide_layouts[0]
+    )
+
     slide.shapes.title.text = title
 
     if len(slide.placeholders) > 1:
-        slide.placeholders[1].text = "AI-generated presentation"
+        slide.placeholders[1].text = (
+            "AI-generated presentation"
+        )
 
     for item in slides:
-        slide_title = item.get("title", "Слайд")
-        body = item.get("content", "")
+        slide_title = item.get(
+            "title",
+            "Слайд",
+        )
+
+        body = item.get(
+            "content",
+            "",
+        )
 
         slide = prs.slides.add_slide(
             prs.slide_layouts[1]
         )
 
-        slide.shapes.title.text = str(slide_title)
+        slide.shapes.title.text = str(
+            slide_title
+        )
+
         textbox = slide.placeholders[1]
+
         textbox.text = str(body)
 
         for paragraph in textbox.text_frame.paragraphs:
@@ -712,24 +849,43 @@ PROJECT_FILE_MAX_CHARS = 120000
 
 
 def validate_project_filename(filename):
-    filename = str(filename).replace("\\", "/").strip()
+    filename = str(
+        filename
+    ).replace(
+        "\\",
+        "/",
+    ).strip()
 
     if not filename:
-        raise ValueError("Пустое имя файла")
+        raise ValueError(
+            "Пустое имя файла"
+        )
 
     if filename.startswith("/"):
-        raise ValueError("Абсолютные пути запрещены")
+        raise ValueError(
+            "Абсолютные пути запрещены"
+        )
 
     path = Path(filename)
 
     if ".." in path.parts:
-        raise ValueError("Выход за пределы проекта запрещён")
+        raise ValueError(
+            "Выход за пределы проекта запрещён"
+        )
 
-    if path.suffix.lower() not in {
-        ".html", ".css", ".js", ".json",
-        ".txt", ".svg", ".xml", ".md",
-        ".webmanifest"
-    }:
+    allowed_extensions = {
+        ".html",
+        ".css",
+        ".js",
+        ".json",
+        ".txt",
+        ".svg",
+        ".xml",
+        ".md",
+        ".webmanifest",
+    }
+
+    if path.suffix.lower() not in allowed_extensions:
         raise ValueError(
             f"Тип файла запрещён: {path.suffix}"
         )
@@ -737,34 +893,37 @@ def validate_project_filename(filename):
     return str(path)
 
 
-def create_website_project(project_name, files):
-    """
-    Создаёт полноценный многофайловый сайт.
-
-    Каждый файл передаётся отдельно.
-    Никакого огромного HTML-ответа пользователю.
-    """
-
-    project_name = safe_filename(project_name)
+def create_website_project(
+    project_name,
+    files,
+):
+    project_name = safe_filename(
+        project_name
+    )
 
     if not files:
-        raise ValueError("Список файлов пуст")
+        raise ValueError(
+            "Список файлов пуст"
+        )
 
     if len(files) > PROJECT_FILE_LIMIT:
         raise ValueError(
-            f"Слишком много файлов. Максимум: "
-            f"{PROJECT_FILE_LIMIT}"
+            f"Слишком много файлов. "
+            f"Максимум: {PROJECT_FILE_LIMIT}"
         )
 
     project_path = os.path.join(
         PROJECTS_DIR,
-        project_name
+        project_name,
     )
 
     if os.path.exists(project_path):
         shutil.rmtree(project_path)
 
-    os.makedirs(project_path, exist_ok=True)
+    os.makedirs(
+        project_path,
+        exist_ok=True,
+    )
 
     created_files = []
 
@@ -785,23 +944,25 @@ def create_website_project(project_name, files):
 
         full_path = os.path.join(
             project_path,
-            filename
+            filename,
         )
 
         os.makedirs(
             os.path.dirname(full_path),
-            exist_ok=True
+            exist_ok=True,
         )
 
         with open(
             full_path,
             "w",
             encoding="utf-8",
-            newline=""
+            newline="",
         ) as f:
             f.write(content)
 
-        created_files.append(filename)
+        created_files.append(
+            filename
+        )
 
     if "index.html" not in created_files:
         raise ValueError(
@@ -820,22 +981,19 @@ def create_website_project(project_name, files):
 def append_to_project_file(
     project_name,
     filename,
-    content
+    content,
 ):
-    """
-    Добавляет продолжение в существующий файл.
+    project_name = safe_filename(
+        project_name
+    )
 
-    Используется для больших сайтов,
-    чтобы модель не была вынуждена
-    генерировать огромный файл одним ответом.
-    """
-
-    project_name = safe_filename(project_name)
-    filename = validate_project_filename(filename)
+    filename = validate_project_filename(
+        filename
+    )
 
     project_path = os.path.join(
         PROJECTS_DIR,
-        project_name
+        project_name,
     )
 
     if not os.path.isdir(project_path):
@@ -845,7 +1003,7 @@ def append_to_project_file(
 
     full_path = os.path.join(
         project_path,
-        filename
+        filename,
     )
 
     content = str(content)
@@ -855,40 +1013,46 @@ def append_to_project_file(
             "Добавляемый фрагмент слишком большой."
         )
 
+    os.makedirs(
+        os.path.dirname(full_path),
+        exist_ok=True,
+    )
+
     with open(
         full_path,
         "a",
         encoding="utf-8",
-        newline=""
+        newline="",
     ) as f:
         f.write(content)
 
     return {
         "success": True,
         "filename": filename,
-        "message": "Файл дополнен."
+        "message": "Файл дополнен.",
     }
 
 
 def read_project_file(
     project_name,
-    filename
+    filename,
 ):
-    """
-    Читает существующий файл проекта.
-    """
+    project_name = safe_filename(
+        project_name
+    )
 
-    project_name = safe_filename(project_name)
-    filename = validate_project_filename(filename)
+    filename = validate_project_filename(
+        filename
+    )
 
     project_path = os.path.join(
         PROJECTS_DIR,
-        project_name
+        project_name,
     )
 
     full_path = os.path.join(
         project_path,
-        filename
+        filename,
     )
 
     if not os.path.isfile(full_path):
@@ -899,28 +1063,25 @@ def read_project_file(
     with open(
         full_path,
         "r",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as f:
         content = f.read()
 
     return {
         "filename": filename,
         "content": content,
-        "length": len(content)
+        "length": len(content),
     }
 
 
 def check_project(project_name):
-    """
-    Проверяет структуру проекта
-    и базовые ошибки.
-    """
-
-    project_name = safe_filename(project_name)
+    project_name = safe_filename(
+        project_name
+    )
 
     project_path = os.path.join(
         PROJECTS_DIR,
-        project_name
+        project_name,
     )
 
     if not os.path.isdir(project_path):
@@ -930,7 +1091,6 @@ def check_project(project_name):
 
     errors = []
     warnings = []
-
     all_files = []
 
     for root, _, filenames in os.walk(
@@ -938,9 +1098,15 @@ def check_project(project_name):
     ):
         for filename in filenames:
             relative = os.path.relpath(
-                os.path.join(root, filename),
-                project_path
-            ).replace("\\", "/")
+                os.path.join(
+                    root,
+                    filename,
+                ),
+                project_path,
+            ).replace(
+                "\\",
+                "/",
+            )
 
             all_files.append(relative)
 
@@ -951,7 +1117,7 @@ def check_project(project_name):
 
     index_path = os.path.join(
         project_path,
-        "index.html"
+        "index.html",
     )
 
     if os.path.exists(index_path):
@@ -959,21 +1125,23 @@ def check_project(project_name):
             with open(
                 index_path,
                 "r",
-                encoding="utf-8"
+                encoding="utf-8",
             ) as f:
                 html = f.read()
 
-            if "<html" not in html.lower():
+            html_lower = html.lower()
+
+            if "<html" not in html_lower:
                 errors.append(
                     "index.html не содержит <html>"
                 )
 
-            if "<body" not in html.lower():
+            if "<body" not in html_lower:
                 warnings.append(
                     "В index.html отсутствует <body>"
                 )
 
-            if "</html>" not in html.lower():
+            if "</html>" not in html_lower:
                 errors.append(
                     "index.html не закрыт тегом </html>"
                 )
@@ -983,7 +1151,6 @@ def check_project(project_name):
                 "index.html имеет неправильную кодировку"
             )
 
-    # Проверяем CSS на очевидные ошибки.
     css_files = [
         x for x in all_files
         if x.lower().endswith(".css")
@@ -992,14 +1159,14 @@ def check_project(project_name):
     for filename in css_files:
         path = os.path.join(
             project_path,
-            filename
+            filename,
         )
 
         try:
             with open(
                 path,
                 "r",
-                encoding="utf-8"
+                encoding="utf-8",
             ) as f:
                 css = f.read()
 
@@ -1010,11 +1177,10 @@ def check_project(project_name):
 
         except Exception as e:
             errors.append(
-                f"Ошибка чтения CSS {filename}: {e}"
+                f"Ошибка чтения CSS "
+                f"{filename}: {e}"
             )
 
-    # Проверяем JavaScript через Node.js,
-    # если Node установлен на сервере.
     js_files = [
         x for x in all_files
         if x.lower().endswith(".js")
@@ -1026,20 +1192,26 @@ def check_project(project_name):
         for filename in js_files:
             path = os.path.join(
                 project_path,
-                filename
+                filename,
             )
 
             try:
                 result = subprocess.run(
-                    [node, "--check", path],
+                    [
+                        node,
+                        "--check",
+                        path,
+                    ],
                     capture_output=True,
                     text=True,
-                    timeout=15
+                    timeout=15,
                 )
 
                 if result.returncode != 0:
                     errors.append(
-                        f"JavaScript ошибка: {filename}"
+                        f"JavaScript ошибка: "
+                        f"{filename}\n"
+                        f"{result.stderr[:1000]}"
                     )
 
             except Exception as e:
@@ -1047,6 +1219,7 @@ def check_project(project_name):
                     f"JS проверка не выполнена "
                     f"для {filename}: {e}"
                 )
+
     elif js_files:
         warnings.append(
             "Node.js отсутствует — "
@@ -1058,20 +1231,18 @@ def check_project(project_name):
         "ok": len(errors) == 0,
         "files": all_files,
         "errors": errors,
-        "warnings": warnings
+        "warnings": warnings,
     }
 
 
 def build_project_zip(project_name):
-    """
-    После проверки собирает проект в ZIP.
-    """
-
-    project_name = safe_filename(project_name)
+    project_name = safe_filename(
+        project_name
+    )
 
     project_path = os.path.join(
         PROJECTS_DIR,
-        project_name
+        project_name,
     )
 
     if not os.path.isdir(project_path):
@@ -1079,73 +1250,83 @@ def build_project_zip(project_name):
             "Проект не найден"
         )
 
-    check = check_project(project_name)
+    check = check_project(
+        project_name
+    )
 
     if not check["ok"]:
         return {
             "success": False,
             "errors": check["errors"],
-            "warnings": check["warnings"]
+            "warnings": check["warnings"],
         }
 
     zip_base = os.path.join(
         FILES_DIR,
-        project_name
+        project_name,
     )
 
     zip_path = shutil.make_archive(
         zip_base,
         "zip",
-        project_path
+        project_path,
     )
 
     return {
         "success": True,
         "path": zip_path,
-        "filename": os.path.basename(zip_path),
+        "filename": os.path.basename(
+            zip_path
+        ),
         "description": (
             f"🌐 Проект '{project_name}' "
             f"проверен и упакован в ZIP."
         ),
-        "files": check["files"]
+        "files": check["files"],
     }
+
 
 # ============================================================
 # 13. TOOLS
 # ============================================================
 
 TOOLS = [
-    {"type": "web_search"},
-    
-        {
+    {
+        "type": "web_search",
+    },
+
+    # --------------------------------------------------------
+    # WEBSITE TOOL 1
+    # --------------------------------------------------------
+
+    {
         "type": "function",
         "name": "create_website_project",
         "description": """
 Создать полноценный проект сайта.
 
 Используй этот инструмент, когда пользователь
-просит создать сайт для бизнеса.
+просит создать сайт.
 
-НЕ выдавай пользователю огромный HTML-код вместо проекта.
+Создавай реальные отдельные файлы:
 
-Создавай реальные файлы проекта:
-index.html,
-style.css,
-script.js,
+index.html
+style.css
+script.js
+
 и другие необходимые файлы.
-
-Проект должен быть готов к размещению на хостинге.
 
 Всегда создавай index.html.
 
-После создания проект автоматически
-собирается в ZIP.
+Для больших файлов можно создавать базовую
+структуру через этот инструмент, а затем
+использовать append_to_project_file.
 """,
         "parameters": {
             "type": "object",
             "properties": {
                 "project_name": {
-                    "type": "string"
+                    "type": "string",
                 },
                 "files": {
                     "type": "array",
@@ -1153,28 +1334,102 @@ script.js,
                         "type": "object",
                         "properties": {
                             "filename": {
-                                "type": "string"
+                                "type": "string",
                             },
                             "content": {
-                                "type": "string"
-                            }
+                                "type": "string",
+                            },
                         },
                         "required": [
                             "filename",
-                            "content"
+                            "content",
                         ],
-                        "additionalProperties": False
-                    }
-                }
+                        "additionalProperties": False,
+                    },
+                },
             },
             "required": [
                 "project_name",
-                "files"
+                "files",
             ],
-            "additionalProperties": False
+            "additionalProperties": False,
         },
-        "strict": True
+        "strict": True,
     },
+
+    # --------------------------------------------------------
+    # WEBSITE TOOL 2
+    # --------------------------------------------------------
+
+    {
+        "type": "function",
+        "name": "append_to_project_file",
+        "description": """
+Добавить текст в конец существующего файла сайта.
+
+Используй для больших сайтов, когда файл
+нужно создавать несколькими частями.
+
+Проект должен уже существовать.
+""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                },
+                "filename": {
+                    "type": "string",
+                },
+                "content": {
+                    "type": "string",
+                },
+            },
+            "required": [
+                "project_name",
+                "filename",
+                "content",
+            ],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+
+    # --------------------------------------------------------
+    # WEBSITE TOOL 3
+    # --------------------------------------------------------
+
+    {
+        "type": "function",
+        "name": "read_project_file",
+        "description": """
+Прочитать существующий файл проекта сайта.
+
+Используй, если нужно проверить или изменить
+конкретный файл уже созданного проекта.
+""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                },
+                "filename": {
+                    "type": "string",
+                },
+            },
+            "required": [
+                "project_name",
+                "filename",
+            ],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+
+    # --------------------------------------------------------
+    # WEBSITE TOOL 4
+    # --------------------------------------------------------
 
     {
         "type": "function",
@@ -1182,25 +1437,35 @@ script.js,
         "description": """
 Проверить ранее созданный сайт.
 
-Проверяет структуру проекта и
-синтаксис JavaScript, если доступен Node.js.
+Проверяет:
+- наличие index.html;
+- базовую структуру HTML;
+- CSS скобки;
+- синтаксис JavaScript, если Node.js доступен.
 
 Используй после создания сайта.
+
+Если есть ошибки —
+исправь файлы и проверь снова.
 """,
         "parameters": {
             "type": "object",
             "properties": {
                 "project_name": {
-                    "type": "string"
-                }
+                    "type": "string",
+                },
             },
             "required": [
-                "project_name"
+                "project_name",
             ],
-            "additionalProperties": False
+            "additionalProperties": False,
         },
-        "strict": True
+        "strict": True,
     },
+
+    # --------------------------------------------------------
+    # CHART
+    # --------------------------------------------------------
 
     {
         "type": "function",
@@ -1216,20 +1481,34 @@ script.js,
         "parameters": {
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
-                "x_label": {"type": "string"},
-                "y_label": {"type": "string"},
+                "title": {
+                    "type": "string",
+                },
+                "x_label": {
+                    "type": "string",
+                },
+                "y_label": {
+                    "type": "string",
+                },
                 "labels": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": {
+                        "type": "string",
+                    },
                 },
                 "values": {
                     "type": "array",
-                    "items": {"type": "number"},
+                    "items": {
+                        "type": "number",
+                    },
                 },
                 "chart_type": {
                     "type": "string",
-                    "enum": ["line", "bar", "pie"],
+                    "enum": [
+                        "line",
+                        "bar",
+                        "pie",
+                    ],
                 },
             },
             "required": [
@@ -1245,6 +1524,10 @@ script.js,
         "strict": True,
     },
 
+    # --------------------------------------------------------
+    # DOCX
+    # --------------------------------------------------------
+
     {
         "type": "function",
         "name": "create_docx",
@@ -1257,15 +1540,29 @@ script.js,
         "parameters": {
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
-                "content": {"type": "string"},
-                "filename": {"type": "string"},
+                "title": {
+                    "type": "string",
+                },
+                "content": {
+                    "type": "string",
+                },
+                "filename": {
+                    "type": "string",
+                },
             },
-            "required": ["title", "content", "filename"],
+            "required": [
+                "title",
+                "content",
+                "filename",
+            ],
             "additionalProperties": False,
         },
         "strict": True,
     },
+
+    # --------------------------------------------------------
+    # PDF
+    # --------------------------------------------------------
 
     {
         "type": "function",
@@ -1274,15 +1571,29 @@ script.js,
         "parameters": {
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
-                "content": {"type": "string"},
-                "filename": {"type": "string"},
+                "title": {
+                    "type": "string",
+                },
+                "content": {
+                    "type": "string",
+                },
+                "filename": {
+                    "type": "string",
+                },
             },
-            "required": ["title", "content", "filename"],
+            "required": [
+                "title",
+                "content",
+                "filename",
+            ],
             "additionalProperties": False,
         },
         "strict": True,
     },
+
+    # --------------------------------------------------------
+    # PPTX
+    # --------------------------------------------------------
 
     {
         "type": "function",
@@ -1299,22 +1610,37 @@ script.js,
         "parameters": {
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
+                "title": {
+                    "type": "string",
+                },
                 "slides": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "title": {"type": "string"},
-                            "content": {"type": "string"},
+                            "title": {
+                                "type": "string",
+                            },
+                            "content": {
+                                "type": "string",
+                            },
                         },
-                        "required": ["title", "content"],
+                        "required": [
+                            "title",
+                            "content",
+                        ],
                         "additionalProperties": False,
                     },
                 },
-                "filename": {"type": "string"},
+                "filename": {
+                    "type": "string",
+                },
             },
-            "required": ["title", "slides", "filename"],
+            "required": [
+                "title",
+                "slides",
+                "filename",
+            ],
             "additionalProperties": False,
         },
         "strict": True,
@@ -1322,44 +1648,63 @@ script.js,
 ]
 
 
+# ============================================================
+# 14. EXECUTE TOOL
+# ============================================================
+
 def execute_tool(name, arguments):
-    logger.info("TOOL: %s", name)
-    
+    logger.info(
+        "TOOL: %s",
+        name,
+    )
+
     if name == "append_to_project_file":
-       return append_to_project_file(**arguments)
+        return append_to_project_file(
+            **arguments
+        )
 
     if name == "read_project_file":
-        return read_project_file(**arguments)
+        return read_project_file(
+            **arguments
+        )
 
     if name == "check_website_project":
-        return check_project(**arguments)
+        return check_project(
+            **arguments
+        )
 
-    if name == "build_project_zip":
-        return build_project_zip(**arguments)
-    
     if name == "create_website_project":
-        return create_website_project(**arguments)
-
-    if name == "check_website_project":
-        return check_project(**arguments)
+        return create_website_project(
+            **arguments
+        )
 
     if name == "create_chart":
-        return create_chart(**arguments)
+        return create_chart(
+            **arguments
+        )
 
     if name == "create_docx":
-        return create_docx(**arguments)
+        return create_docx(
+            **arguments
+        )
 
     if name == "create_pdf":
-        return create_pdf(**arguments)
+        return create_pdf(
+            **arguments
+        )
 
     if name == "create_pptx":
-        return create_pptx(**arguments)
+        return create_pptx(
+            **arguments
+        )
 
-    raise ValueError(f"Неизвестный tool: {name}")
+    raise ValueError(
+        f"Неизвестный tool: {name}"
+    )
 
 
 # ============================================================
-# 14. CLEAN TEXT
+# 15. CLEAN TEXT
 # ============================================================
 
 def clean_text(text):
@@ -1386,7 +1731,7 @@ def clean_text(text):
 
 
 # ============================================================
-# 15. RUN AGENT
+# 16. RUN AGENT
 # ============================================================
 
 async def run_agent(
@@ -1394,7 +1739,9 @@ async def run_agent(
     user_text,
     image_data_url=None,
 ):
-    user_text = str(user_text).strip()
+    user_text = str(
+        user_text
+    ).strip()
 
     if len(user_text) > MAX_TEXT_LENGTH:
         user_text = (
@@ -1437,6 +1784,7 @@ async def run_agent(
                 },
             ],
         })
+
     else:
         input_items.append({
             "role": "user",
@@ -1462,6 +1810,8 @@ async def run_agent(
             )
         )
 
+        # Добавляем ВСЕ элементы ответа модели
+        # обратно в контекст следующего шага.
         for item in response.output:
             try:
                 input_items.append(
@@ -1469,42 +1819,135 @@ async def run_agent(
                         exclude_none=True
                     )
                 )
+
             except Exception:
-                pass
+                logger.exception(
+                    "Не удалось добавить output item"
+                )
 
         function_calls = [
             item
             for item in response.output
-            if getattr(item, "type", None) == "function_call"
+            if getattr(
+                item,
+                "type",
+                None,
+            ) == "function_call"
         ]
 
+        # Модель закончила работу.
         if not function_calls:
-            answer = response.output_text or ""
-            return clean_text(answer), generated_files
+            answer = (
+                response.output_text
+                or ""
+            )
 
+            return (
+                clean_text(answer),
+                generated_files,
+            )
+
+        # Выполняем все function calls.
         for call in function_calls:
-            try:
-                arguments = json.loads(call.arguments)
-            except json.JSONDecodeError as e:
-                logger.error("INVALID TOOL JSON: %s", e)
-                tool_output = {
-                    "success": False,
-                    "error": "Аргументы инструмента были обрезаны. Повтори вызов с меньшим объёмом данных.",
-                    "retry": True
-                }
-                continue
-    
-            result = await asyncio.to_thread(
-                execute_tool,
-                call.name,
-                arguments,
-           )
 
-            if (
+            try:
+                arguments = json.loads(
+                    call.arguments
+                )
+
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(
+                    "INVALID TOOL JSON: %s",
+                    e,
+                )
+
+                tool_output = json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            "Аргументы инструмента "
+                            "были повреждены. "
+                            "Повтори вызов с меньшим "
+                            "объёмом данных."
+                        ),
+                        "retry": True,
+                    },
+                    ensure_ascii=False,
+                )
+
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": tool_output,
+                })
+
+                continue
+
+            try:
+                result = await asyncio.to_thread(
+                    execute_tool,
+                    call.name,
+                    arguments,
+                )
+
+                # ------------------------------------------------
+                # Если сайт успешно проверен —
+                # автоматически создаём ZIP.
+                # ------------------------------------------------
+
+                if (
+                    call.name == "check_website_project"
+                    and isinstance(result, dict)
+                    and result.get("ok") is True
+                ):
+                    project_name = result.get(
+                        "project"
+                    )
+
+                    if project_name:
+                        try:
+                            zip_result = await asyncio.to_thread(
+                                build_project_zip,
+                                project_name,
+                            )
+
+                            if (
+                                isinstance(zip_result, dict)
+                                and zip_result.get("success")
+                                and zip_result.get("path")
+                            ):
+                                generated_files.append(
+                                    zip_result
+                                )
+
+                                result = {
+                                    **result,
+                                    "zip": zip_result,
+                                }
+
+                        except Exception as zip_error:
+                            logger.exception(
+                                "ZIP BUILD ERROR"
+                            )
+
+                            result = {
+                                **result,
+                                "zip_error": str(
+                                    zip_error
+                                ),
+                            }
+
+                # ------------------------------------------------
+                # Обычные созданные файлы
+                # ------------------------------------------------
+
+                if (
                     isinstance(result, dict)
                     and result.get("path")
                 ):
-                    generated_files.append(result)
+                    generated_files.append(
+                        result
+                    )
 
                 tool_output = json.dumps(
                     result,
@@ -1512,10 +1955,15 @@ async def run_agent(
                 )
 
             except Exception as e:
-                logger.exception("TOOL ERROR")
+                logger.exception(
+                    "TOOL ERROR"
+                )
 
                 tool_output = json.dumps(
-                    {"error": str(e)},
+                    {
+                        "success": False,
+                        "error": str(e),
+                    },
                     ensure_ascii=False,
                 )
 
@@ -1533,7 +1981,7 @@ async def run_agent(
 
 
 # ============================================================
-# 16. VOICE
+# 17. VOICE
 # ============================================================
 
 async def transcribe_audio(
@@ -1546,36 +1994,52 @@ async def transcribe_audio(
         f"{safe_filename(filename)}",
     )
 
-    with open(temp_path, "wb") as f:
+    with open(
+        temp_path,
+        "wb",
+    ) as f:
         f.write(audio_bytes)
 
     try:
+
         def request():
-            with open(temp_path, "rb") as audio_file:
+            with open(
+                temp_path,
+                "rb",
+            ) as audio_file:
                 return client.audio.transcriptions.create(
                     model=TRANSCRIBE_MODEL,
                     file=audio_file,
                 )
 
-        result = await asyncio.to_thread(request)
+        result = await asyncio.to_thread(
+            request
+        )
+
         return result.text
 
     finally:
         try:
-            os.remove(temp_path)
+            os.remove(
+                temp_path
+            )
         except Exception:
             pass
 
 
 # ============================================================
-# 17. IMAGE
+# 18. IMAGE
 # ============================================================
 
 def prepare_image(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes))
+    image = Image.open(
+        io.BytesIO(image_bytes)
+    )
 
     if image.mode != "RGB":
-        image = image.convert("RGB")
+        image = image.convert(
+            "RGB"
+        )
 
     image.thumbnail(
         (1600, 1600),
@@ -1599,10 +2063,13 @@ def prepare_image(image_bytes):
 
 
 # ============================================================
-# 18. TELEGRAM LONG MESSAGE
+# 19. TELEGRAM LONG MESSAGE
 # ============================================================
 
-async def send_long_message(message, text):
+async def send_long_message(
+    message,
+    text,
+):
     if not text:
         return
 
@@ -1618,25 +2085,41 @@ async def send_long_message(message, text):
         ]
 
         if chunk.strip():
-            await message.reply_text(chunk)
+            await message.reply_text(
+                chunk
+            )
 
 
 # ============================================================
-# 19. SEND FILES
+# 20. SEND FILES
 # ============================================================
 
 async def send_generated_files(
     message,
     generated_files,
 ):
+    sent_paths = set()
+
     for item in generated_files:
         path = item.get("path")
 
-        if not path or not os.path.exists(path):
+        if not path:
             continue
 
+        if path in sent_paths:
+            continue
+
+        if not os.path.exists(path):
+            continue
+
+        sent_paths.add(path)
+
         try:
-            with open(path, "rb") as file:
+            with open(
+                path,
+                "rb",
+            ) as file:
+
                 await message.reply_document(
                     document=file,
                     caption=(
@@ -1647,12 +2130,15 @@ async def send_generated_files(
                         )
                     ),
                 )
+
         except Exception:
-            logger.exception("FILE SEND ERROR")
+            logger.exception(
+                "FILE SEND ERROR"
+            )
 
 
 # ============================================================
-# 20. START
+# 21. START
 # ============================================================
 
 async def start_command(
@@ -1660,7 +2146,11 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     user = update.effective_user
-    name = user.first_name or "бро"
+
+    name = (
+        user.first_name
+        or "бро"
+    )
 
     await update.message.reply_text(
         f"салам, {name} 😎\n\n"
@@ -1681,7 +2171,7 @@ async def start_command(
 
 
 # ============================================================
-# 21. RESET
+# 22. RESET
 # ============================================================
 
 async def reset_command(
@@ -1691,7 +2181,9 @@ async def reset_command(
     user_id = update.effective_user.id
 
     async with db_lock:
-        clear_memory(user_id)
+        clear_memory(
+            user_id
+        )
 
     await update.message.reply_text(
         "всё, память очищена 😂"
@@ -1699,7 +2191,7 @@ async def reset_command(
 
 
 # ============================================================
-# 22. TEXT
+# 23. TEXT
 # ============================================================
 
 async def text_handler(
@@ -1722,19 +2214,26 @@ async def text_handler(
     if len(text) > MAX_TEXT_LENGTH:
         await update.message.reply_text(
             "сообщение слишком длинное 😭\n"
-            f"максимум сейчас {MAX_TEXT_LENGTH} символов."
+            f"максимум сейчас "
+            f"{MAX_TEXT_LENGTH} символов."
         )
+
         return
 
     try:
         await update.message.chat.send_action(
             ChatAction.TYPING
         )
+
     except Exception:
         pass
 
     async with db_lock:
-        save_message(user_id, "user", text)
+        save_message(
+            user_id,
+            "user",
+            text,
+        )
 
     try:
         answer, files = await run_agent(
@@ -1743,7 +2242,9 @@ async def text_handler(
         )
 
         if not answer:
-            answer = "мале, что-то пошло не так 😭"
+            answer = (
+                "мале, что-то пошло не так 😭"
+            )
 
         async with db_lock:
             save_message(
@@ -1763,7 +2264,9 @@ async def text_handler(
         )
 
     except Exception:
-        logger.exception("TEXT HANDLER ERROR")
+        logger.exception(
+            "TEXT HANDLER ERROR"
+        )
 
         await update.message.reply_text(
             "мале, я щас затупил 😭"
@@ -1771,14 +2274,17 @@ async def text_handler(
 
 
 # ============================================================
-# 23. VOICE
+# 24. VOICE
 # ============================================================
 
 async def voice_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    if not update.message or not update.message.voice:
+    if (
+        not update.message
+        or not update.message.voice
+    ):
         return
 
     user_id = update.effective_user.id
@@ -1805,12 +2311,16 @@ async def voice_handler(
             "voice.ogg",
         )
 
-        text = (text or "").strip()
+        text = (
+            text
+            or ""
+        ).strip()
 
         if not text:
             await update.message.reply_text(
                 "не смог разобрать голосовое 😭"
             )
+
             return
 
         async with db_lock:
@@ -1831,7 +2341,9 @@ async def voice_handler(
         )
 
         if not answer:
-            answer = "мале, я щас затупил 😭"
+            answer = (
+                "мале, я щас затупил 😭"
+            )
 
         async with db_lock:
             save_message(
@@ -1851,7 +2363,9 @@ async def voice_handler(
         )
 
     except Exception:
-        logger.exception("VOICE HANDLER ERROR")
+        logger.exception(
+            "VOICE HANDLER ERROR"
+        )
 
         await update.message.reply_text(
             "не смог обработать голосовое 😭"
@@ -1859,14 +2373,17 @@ async def voice_handler(
 
 
 # ============================================================
-# 24. PHOTO
+# 25. PHOTO
 # ============================================================
 
 async def photo_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    if not update.message or not update.message.photo:
+    if (
+        not update.message
+        or not update.message.photo
+    ):
         return
 
     user_id = update.effective_user.id
@@ -1909,7 +2426,9 @@ async def photo_handler(
         )
 
         if not answer:
-            answer = "не смог нормально посмотреть 😭"
+            answer = (
+                "не смог нормально посмотреть 😭"
+            )
 
         async with db_lock:
             save_message(
@@ -1929,7 +2448,9 @@ async def photo_handler(
         )
 
     except Exception:
-        logger.exception("PHOTO HANDLER ERROR")
+        logger.exception(
+            "PHOTO HANDLER ERROR"
+        )
 
         await update.message.reply_text(
             "мале, картинка не прошла 😭"
@@ -1937,24 +2458,32 @@ async def photo_handler(
 
 
 # ============================================================
-# 25. DOCUMENT
+# 26. DOCUMENT
 # ============================================================
 
 async def document_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    if not update.message or not update.message.document:
+    if (
+        not update.message
+        or not update.message.document
+    ):
         return
 
     document = update.message.document
-    size = document.file_size or 0
+
+    size = (
+        document.file_size
+        or 0
+    )
 
     if size > MAX_FILE_SIZE_MB * 1024 * 1024:
         await update.message.reply_text(
             f"файл слишком большой 😭\n"
             f"максимум {MAX_FILE_SIZE_MB} MB."
         )
+
         return
 
     try:
@@ -1970,14 +2499,20 @@ async def document_handler(
             await telegram_file.download_as_bytearray()
         )
 
-        filename = document.file_name or "uploaded_file"
+        filename = (
+            document.file_name
+            or "uploaded_file"
+        )
 
         path = os.path.join(
             FILES_DIR,
             safe_filename(filename),
         )
 
-        with open(path, "wb") as f:
+        with open(
+            path,
+            "wb",
+        ) as f:
             f.write(file_bytes)
 
         await update.message.reply_text(
@@ -1987,7 +2522,9 @@ async def document_handler(
         )
 
     except Exception:
-        logger.exception("DOCUMENT HANDLER ERROR")
+        logger.exception(
+            "DOCUMENT HANDLER ERROR"
+        )
 
         await update.message.reply_text(
             "не смог получить файл 😭"
@@ -1995,10 +2532,13 @@ async def document_handler(
 
 
 # ============================================================
-# 26. ERROR
+# 27. ERROR
 # ============================================================
 
-async def error_handler(update, context):
+async def error_handler(
+    update,
+    context,
+):
     logger.error(
         "Telegram error: %s",
         context.error,
@@ -2006,7 +2546,7 @@ async def error_handler(update, context):
 
 
 # ============================================================
-# 27. MAIN
+# 28. MAIN
 # ============================================================
 
 async def main():
@@ -2019,19 +2559,31 @@ async def main():
     )
 
     application.add_handler(
-        CommandHandler("start", start_command)
+        CommandHandler(
+            "start",
+            start_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("reset", reset_command)
+        CommandHandler(
+            "reset",
+            reset_command,
+        )
     )
 
     application.add_handler(
-        MessageHandler(filters.VOICE, voice_handler)
+        MessageHandler(
+            filters.VOICE,
+            voice_handler,
+        )
     )
 
     application.add_handler(
-        MessageHandler(filters.PHOTO, photo_handler)
+        MessageHandler(
+            filters.PHOTO,
+            photo_handler,
+        )
     )
 
     application.add_handler(
@@ -2048,7 +2600,9 @@ async def main():
         )
     )
 
-    application.add_error_handler(error_handler)
+    application.add_error_handler(
+        error_handler
+    )
 
     print()
     print("=" * 65)
@@ -2081,8 +2635,10 @@ async def main():
     try:
         while True:
             await asyncio.sleep(3600)
+
     except asyncio.CancelledError:
         pass
+
     finally:
         await application.updater.stop()
         await application.stop()
@@ -2090,7 +2646,7 @@ async def main():
 
 
 # ============================================================
-# 28. RUN
+# 29. RUN
 # ============================================================
 
 if __name__ == "__main__":
