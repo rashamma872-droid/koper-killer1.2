@@ -1482,22 +1482,24 @@ async def run_agent(
             answer = response.output_text or ""
             return clean_text(answer), generated_files
 
-             for call in function_calls:
-                 try:
-                    arguments = json.loads(call.arguments)
-                except json.JSONDecodeError as e:
-                    logger.error("INVALID TOOL JSON: %s", e)
-                    tool_output = {
-                        "success": False,
-                        "error": "Аргументы инструмента были обрезаны. Повтори вызов с меньшим объёмом данных.",
-                        "retry": True
-                    }
-                    continue
+    for call in function_calls:
+        try:
+            arguments = json.loads(call.arguments)
+        except json.JSONDecodeError as e:
+            logger.error("INVALID TOOL JSON: %s", e)
+            tool_output = {
+                "success": False,
+                "error": "Аргументы инструмента были обрезаны. Повтори вызов с меньшим объёмом данных.",
+                "retry": True
+            }
+            continue
 
-                result = await asyncio.to_thread(
-                    execute_tool,
-                    call.name,
-                    arguments,
+        result = await asyncio.to_thread(
+            execute_tool,
+            call.name,
+            arguments,
+        )
+
                 )
 
                 if (
