@@ -107,7 +107,7 @@ MAX_TEXT_LENGTH = 10000
 MAX_TELEGRAM_LENGTH = 4000
 MAX_FILE_SIZE_MB = 25
 MAX_HISTORY_MESSAGE_LENGTH = 4000
-MAX_OUTPUT_TOKENS = 2000
+MAX_OUTPUT_TOKENS = 9000
 
 # ============================================================
 # 6. PERSONALITY
@@ -1801,14 +1801,25 @@ async def run_agent(
         )
 
         response = await asyncio.to_thread(
-            lambda: client.responses.create(
-                model=MODEL,
-                instructions=SYSTEM_PROMPT,
-                input=input_items,
-                tools=TOOLS,
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-            )
-        )
+    lambda: client.responses.create(
+        model=MODEL,
+        instructions=SYSTEM_PROMPT,
+        input=input_items,
+        tools=TOOLS,
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+    )
+)
+
+logger.info(
+    "RESPONSE STATUS: %s",
+    getattr(response, "status", None),
+)
+
+if getattr(response, "status", None) == "incomplete":
+    logger.error(
+        "INCOMPLETE RESPONSE: %s",
+        getattr(response, "incomplete_details", None),
+    )
 
         # Добавляем ВСЕ элементы ответа модели
         # обратно в контекст следующего шага.
