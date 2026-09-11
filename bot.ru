@@ -1800,7 +1800,7 @@ async def run_agent(
             MAX_AGENT_STEPS,
         )
 
-        response = await asyncio.to_thread(
+response = await asyncio.to_thread(
     lambda: client.responses.create(
         model=MODEL,
         instructions=SYSTEM_PROMPT,
