@@ -1800,51 +1800,51 @@ async def run_agent(
             MAX_AGENT_STEPS,
         )
 
-response = await asyncio.to_thread(
-    lambda: client.responses.create(
-        model=MODEL,
-        instructions=SYSTEM_PROMPT,
-        input=input_items,
-        tools=TOOLS,
-        max_output_tokens=MAX_OUTPUT_TOKENS,
-    )
-)
-
-logger.info(
-    "RESPONSE STATUS: %s",
-    getattr(response, "status", None),
-)
-
-if getattr(response, "status", None) == "incomplete":
-    logger.error(
-        "INCOMPLETE RESPONSE: %s",
-        getattr(response, "incomplete_details", None),
+    response = await asyncio.to_thread(
+        lambda: client.responses.create(
+            model=MODEL,
+            instructions=SYSTEM_PROMPT,
+            input=input_items,
+            tools=TOOLS,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+        )
     )
 
-        # Добавляем ВСЕ элементы ответа модели
-        # обратно в контекст следующего шага.
-        for item in response.output:
-            try:
-                input_items.append(
-                    item.model_dump(
-                        exclude_none=True
+    logger.info(
+        "RESPONSE STATUS: %s",
+        getattr(response, "status", None),
+    )
+
+    if getattr(response, "status", None) == "incomplete":
+        logger.error(
+            "INCOMPLETE RESPONSE: %s",
+                getattr(response, "incomplete_details", None),
+        )
+
+            # Добавляем ВСЕ элементы ответа модели
+            # обратно в контекст следующего шага.
+            for item in response.output:
+                try:
+                    input_items.append(
+                        item.model_dump(
+                            exclude_none=True
+                        )
                     )
-                )
 
-            except Exception:
-                logger.exception(
-                    "Не удалось добавить output item"
-                )
+                except Exception:
+                    logger.exception(
+                        "Не удалось добавить output item"
+                    )
 
-        function_calls = [
-            item
-            for item in response.output
-            if getattr(
-                item,
-                "type",
-                None,
-            ) == "function_call"
-        ]
+            function_calls = [
+                item
+                for item in response.output
+                if getattr(
+                    item,
+                    "type",
+                    None,
+                ) == "function_call"
+            ]
 
         # Модель закончила работу.
         if not function_calls:
