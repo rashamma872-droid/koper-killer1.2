@@ -1821,9 +1821,9 @@ if getattr(response, "status", None) == "incomplete":
         getattr(response, "incomplete_details", None),
     )
 
-        # Добавляем ВСЕ элементы ответа модели
-        # обратно в контекст следующего шага.
-        for item in response.output:
+# Добавляем ВСЕ элементы ответа модели
+# обратно в контекст следующего шага.
+for item in response.output:
             try:
                 input_items.append(
                     item.model_dump(
