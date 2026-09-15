@@ -236,7 +236,7 @@ logger = logging.getLogger(APP_NAME)
 # SYSTEM PROMPT
 # ============================================================================
 
-SYSTEM_PROMPT = “””
+SYSTEM_PROMPT = """
 You are KOPER KILLER, a practical personal AI agent inside Telegram.
 
 PERSONALITY AND STYLE
@@ -399,7 +399,7 @@ Do not merely describe what should be done when you have the tools to do it.
 Do not claim an action was completed unless it was actually completed.
 
 Do not invent results, files, searches or information.
-“””
+"""
 
 
 # ============================================================================
