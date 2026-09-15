@@ -119,7 +119,7 @@ APP_VERSION = "3.0.0"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
+MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-nano").strip()
 TRANSCRIBE_MODEL = os.getenv(
     "TRANSCRIBE_MODEL",
     "gpt-4o-transcribe",
@@ -132,8 +132,8 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 PROJECTS_DIR = DATA_DIR / "projects"
 DB_PATH = DATA_DIR / "memory.db"
 
-MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "10"))
-MAX_HISTORY = int(os.getenv("MAX_HISTORY", "12"))
+MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "8"))
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "9"))
 
 MAX_TEXT_LENGTH = int(
     os.getenv("MAX_TEXT_LENGTH", "16000")
